@@ -12,6 +12,6 @@ def test_review_system_prompt_marks_pr_content_untrusted():
     template = get_settings().pr_review_prompt.system
     # The sentence is unconditional (outside any {%- if %} block), so it must
     # survive rendering with a minimal, empty context.
-    rendered = Environment().from_string(template).render({})
+    rendered = Environment(autoescape=True).from_string(template).render({})
 
     assert _UNTRUSTED_CONTENT_SENTENCE in rendered
