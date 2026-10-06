@@ -19,7 +19,6 @@ from pr_agent.config_security import (
     PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION,
     REPO_HOST_ONLY_KEYS_BY_SECTION,
     REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION,
-
     REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS,
 )
 from pr_agent.custom_merge_loader import MAX_TOML_SIZE_IN_BYTES, validate_file_security
