@@ -19,6 +19,7 @@ from pr_agent.config_security import (
     PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION,
     REPO_HOST_ONLY_KEYS_BY_SECTION,
     REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION,
+
     REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS,
 )
 from pr_agent.custom_merge_loader import MAX_TOML_SIZE_IN_BYTES, validate_file_security
@@ -391,6 +392,28 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
         if not isinstance(contents, dict) or not contents:
             get_logger().debug(f"Skipping non-table or empty section: {section}")
             continue
+            # Dynaconf treats `__` in a key as a nesting separator when merging
+            # (Settings.set splits on it), so a section such as
+            # [config__extra_config_url] would land inside the protected CONFIG
+            # section without passing the allowlist/host-only checks below.
+            # Comment arguments already normalise `__` to `.` and are rejected
+            # there, so the repository file path rejects them outright instead:
+            # drop any key containing `__` and skip hostile section names.
+            if "__" in section:
+                get_logger().warning(
+                    f"Ignoring section [{section}] from repo settings: section "
+                    "names containing '__' are not allowed"
+                )
+                continue
+            dunder_keys = [key for key in contents if "__" in key]
+            if dunder_keys:
+                get_logger().warning(
+                    f"Ignoring key(s) {dunder_keys} in section [{section}] from "
+                    "repo settings: key names containing '__' are not allowed"
+                )
+                contents = {key: value for key, value in contents.items() if "__" not in key}
+                if not contents:
+                    continue
         if repo_settings_scope == "per_directory":
             if section.lower() not in REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS:
                 get_logger().warning(
