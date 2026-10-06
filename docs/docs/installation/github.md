@@ -21,10 +21,9 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
-      contents: write
-      checks: write
     name: Run pr agent on every pull request, respond to user comments
     steps:
       - name: PR Agent action step
@@ -76,9 +75,9 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' && (github.event_name == 'pull_request_target' || github.event.issue.pull_request) }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
-      contents: write
     steps:
       - name: PR Agent action step
         uses: the-pr-agent/pr-agent@main
@@ -117,9 +116,9 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
-      contents: write
     steps:
       - name: PR Agent action step
         uses: the-pr-agent/pr-agent@main
@@ -143,9 +142,9 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
-      contents: write
     steps:
       - name: PR Agent action step
         uses: the-pr-agent/pr-agent@main
@@ -174,9 +173,9 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
-      contents: write
     steps:
       - name: PR Agent action step
         uses: the-pr-agent/pr-agent@main
@@ -204,9 +203,9 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
-      contents: write
     name: Run pr agent on every pull request, respond to user comments
     steps:
       - name: PR Agent action step
@@ -483,9 +482,9 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
-      contents: write
     name: Run pr agent on every pull request, respond to user comments
     steps:
       - name: PR Agent action step
@@ -554,16 +553,16 @@ If you encounter rate limiting:
 - **Solution**: Ensure your workflow has the correct permissions set:
   ```yaml
   permissions:
-    issues: write
-    pull-requests: write
-    contents: write
-  ```
-  If you cannot grant `contents: write`, set `config.restricted_mode = true` in your configuration. In that case you only need:
-  ```yaml
-  permissions:
+    contents: read
     issues: write
     pull-requests: write
   ```
+  The default tools need no additional scopes. Add `checks: write` only when
+  `github.publish_as_check_run` is enabled. Features that push repository contents, such as
+  `pr_update_changelog.push_changelog_changes`, require `contents: write`, and so does
+  `pr_questions.resolve_threads`, because GitHub gates thread resolution on that scope. If you omit
+  `contents: write`, enable `config.restricted_mode` so operations that need it are skipped or fall
+  back safely, and keep `pr_questions.resolve_threads` off, since restricted mode does not cover it.
   See the [Restricted Mode guide](../usage-guide/additional_configurations.md#restricted-mode) for details.
 
 **Error: "PR-Agent command was not run" for incomplete GitHub files**

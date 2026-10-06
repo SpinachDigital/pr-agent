@@ -25,13 +25,24 @@ REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION = {
     "prompt_fragments": frozenset(),
 }
 
-# Individual settings in otherwise repository-configurable sections may also be
-# host-only. publish_error_details controls what service-side failure state is
-# disclosed in a PR comment, so the PR author must not be able to enable it.
+_CONNECTION_KEY_SUFFIXES = ("url", "base_url", "endpoint", "org", "key", "token", "secret")
+_REPO_OVERRIDABLE_SUFFIX_KEYS_BY_SECTION = {
+    "config": frozenset({"progress_gif_url"}),
+    "gitea": frozenset({"web_url"}),
+}
+_REPO_OVERRIDABLE_SUFFIX_SECTIONS = frozenset({"custom_labels", "language_extension_map_org"})
+
+
+# Keep individual settings in otherwise repository-configurable sections host-only.
+# Protect generic provider connection locations and credentials in every section,
+# using the exceptions above only for documented repository preferences.
 REPO_HOST_ONLY_KEYS_BY_SECTION = {
+    "aws": frozenset({"aws_access_key_id", "aws_region_name"}),
     # Keep api_base, api_type and api_version host-controlled, matching the comment-argument filter.
     "azure_ad": frozenset({"api_base"}),
+    "azure_devops": frozenset({"pat"}),
     "databricks": frozenset({"api_base"}),
+    "gerrit": frozenset({"webhook_password", "webhook_username"}),
     "huggingface": frozenset({"api_base"}),
     "moonshot": frozenset({"api_base"}),
     "ollama": frozenset({"api_base"}),
@@ -73,6 +84,20 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
         "repo_context_sibling_repos",
     }),
 }
+
+
+def is_repo_host_only_key(section: str, key: str) -> bool:
+    """Return whether a repository must not override a setting."""
+    section = section.lower()
+    key = key.lower()
+    if key in REPO_HOST_ONLY_KEYS_BY_SECTION.get(section, frozenset()):
+        return True
+    return (
+        section not in _REPO_OVERRIDABLE_SUFFIX_SECTIONS
+        and key not in _REPO_OVERRIDABLE_SUFFIX_KEYS_BY_SECTION.get(section, frozenset())
+        and key.endswith(_CONNECTION_KEY_SUFFIXES)
+    )
+
 
 # Keys that repositories may still configure from their own default-branch settings but that
 # comment/CLI *arguments* must never override. repo_context_files selects which repository and

@@ -19,7 +19,9 @@ from contextlib import suppress
 
 import pytest
 
+from pr_agent.algo.cli_args import CliArgs
 from pr_agent.config_loader import get_settings
+from pr_agent.config_security import is_repo_host_only_key
 from pr_agent.git_providers import utils as git_utils
 from pr_agent.git_providers.utils import apply_repo_settings
 
@@ -66,6 +68,8 @@ SNAPSHOT_SECTIONS = (
     "MOONSHOT",
     "DATABRICKS",
     "OPENROUTER",
+    "GITEA",
+    "LANGUAGE_EXTENSION_MAP_ORG",
 )
 
 
@@ -416,96 +420,82 @@ def test_repo_settings_cannot_override_provider_endpoint_keys(monkeypatch, setti
     assert _section(settings, section).get(key) == "host-controlled"
 
 
-def test_repo_settings_still_apply_allowed_provider_keys(monkeypatch, settings_snapshot):
+def test_repo_settings_filter_provider_credentials_but_apply_safe_keys(monkeypatch, settings_snapshot):
     provider = FakeGitProvider(
-        repo_settings_bytes=(b'[ollama]\napi_base = "https://repo-controlled.example"\napi_key = "repo-key"\n')
+        repo_settings_bytes=(b'[ollama]\napi_key = "repo-key"\ntimeout = 30\n')
     )
     _install_provider(monkeypatch, provider)
 
     settings = get_settings()
     settings.set("config.use_repo_settings_file", True)
-    settings.set("ollama.api_base", "https://host-controlled.example")
+    settings.set("ollama.api_key", "host-key")
 
     apply_repo_settings("https://example.com/owner/repo/pull/1")
 
     ollama = _section(settings, "ollama")
-    assert ollama.get("api_base") == "https://host-controlled.example"
-    assert ollama.get("api_key") == "repo-key"
+    assert ollama.get("api_key") == "host-key"
+    assert ollama.get("timeout") == 30
 
 
-def test_repo_settings_reject_dunder_section_name(monkeypatch, settings_snapshot):
-    """A section name containing `__` must be skipped entirely: Dynaconf would
-    otherwise treat it as a nesting separator and merge the contents into the
-    protected section without passing the allowlist/host-only checks."""
-    provider = FakeGitProvider(
-        repo_settings_bytes=b'[config__extra_config_url]\nx = "https://evil.example.com/evil.toml"\n'
-    )
-    captured = _install_provider(monkeypatch, provider)
-
-    settings = get_settings()
-    settings.set("config.use_repo_settings_file", True)
-    settings.set("config.extra_config_url", "")
-
-    apply_repo_settings("https://example.com/owner/repo/pull/1")
-
-    assert captured["errors"] is None
-    config = _section(settings, "config")
-    # The protected key is untouched and the hostile section did not land
-    # nested inside CONFIG either.
-    assert config.get("extra_config_url") == ""
+@pytest.mark.parametrize(
+    ("section", "key"),
+    [
+        ("github", "base_url"),
+        ("gerrit", "patch_server_endpoint"),
+        ("gerrit", "webhook_password"),
+        ("gerrit", "webhook_username"),
+        ("azure_devops", "org"),
+        ("azure_devops", "pat"),
+        ("aws", "aws_access_key_id"),
+        ("aws", "aws_region_name"),
+        ("anthropic", "key"),
+        ("gitlab", "private_token"),
+    ],
+)
+def test_provider_connection_keys_are_host_only_for_repo_and_cli(section, key):
+    assert is_repo_host_only_key(section, key)
+    assert CliArgs.validate_user_args([f"--{section}.{key}=untrusted"])[0] is False
 
 
-def test_repo_settings_reject_dunder_section_targeting_host_only_key(monkeypatch, settings_snapshot):
-    provider = FakeGitProvider(
-        repo_settings_bytes=b'[pr_reviewer__publish_error_details]\nx = true\n'
-    )
+@pytest.mark.parametrize(
+    "arg",
+    ["--gerrit.connection.secret=untrusted", '--qdrant={replicas: [{base_url: "https://evil.example"}]}'],
+)
+def test_nested_provider_connection_keys_are_host_only_for_cli(arg):
+    assert CliArgs.validate_user_args([arg])[0] is False
+
+
+def test_progress_gif_url_remains_repo_and_cli_configurable():
+    assert not is_repo_host_only_key("config", "progress_gif_url")
+    assert CliArgs.validate_user_args(["--config.progress_gif_url=https://example.com/progress.gif"])[0] is True
+
+
+def test_repo_settings_apply_section_specific_safe_suffix_keys(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(repo_settings_bytes=b"""
+[gitea]
+url = "https://repo-api.example"
+web_url = "https://repo-public.example"
+[language_extension_map_org]
+AutoHotkey = [".repo-ahk"]
+Monkey = [".repo-monkey"]
+Org = [".repo-org"]
+[custom_labels."API key"]
+description = "Touches API-key handling"
+[custom_labels.Hotkey]
+description = "Keyboard shortcut"
+""")
     _install_provider(monkeypatch, provider)
-
     settings = get_settings()
     settings.set("config.use_repo_settings_file", True)
-
-    publish_before = _section(settings, "pr_reviewer").get("publish_error_details")
+    settings.set("gitea.url", "https://host-api.example")
 
     apply_repo_settings("https://example.com/owner/repo/pull/1")
 
-    pr_reviewer = _section(settings, "pr_reviewer")
-    # The hostile section is skipped wholesale: the protected key is untouched
-    # and no nested landing of the attack payload exists in PR_REVIEWER.
-    assert pr_reviewer.get("publish_error_details") == publish_before
-    assert not any("__" in key for key in pr_reviewer)
-
-
-def test_repo_settings_reject_dunder_section_for_allowlisted_section(monkeypatch, settings_snapshot):
-    provider = FakeGitProvider(
-        repo_settings_bytes=b'[skills__paths]\nx = "/etc/passwd"\n'
-    )
-    captured = _install_provider(monkeypatch, provider)
-
-    settings = get_settings()
-    settings.set("config.use_repo_settings_file", True)
-    skills_before = copy.deepcopy(_section(settings, "skills"))
-
-    apply_repo_settings("https://example.com/owner/repo/pull/1")
-
-    assert captured["errors"] is None
-    # The whole hostile section is skipped: no nested landing in SKILLS.
-    assert _section(settings, "skills") == skills_before
-
-
-def test_repo_settings_reject_dunder_keys_inside_section(monkeypatch, settings_snapshot):
-    provider = FakeGitProvider(
-        repo_settings_bytes=(
-            b'[pr_reviewer]\nnum_max_findings = 11\nnum__max__findings = 99\n'
-        )
-    )
-    captured = _install_provider(monkeypatch, provider)
-
-    settings = get_settings()
-    settings.set("config.use_repo_settings_file", True)
-
-    apply_repo_settings("https://example.com/owner/repo/pull/1")
-
-    assert captured["errors"] is None
-    pr_reviewer = _section(settings, "pr_reviewer")
-    assert pr_reviewer.get("num_max_findings") == 11
-    assert not any("__" in key for key in pr_reviewer)
+    assert _section(settings, "gitea").get("url") == "https://host-api.example"
+    assert _section(settings, "gitea").get("web_url") == "https://repo-public.example"
+    language_map = _section(settings, "language_extension_map_org")
+    assert {key: language_map.get(key) for key in ("AutoHotkey", "Monkey", "Org")} == {
+        "AutoHotkey": [".repo-ahk"], "Monkey": [".repo-monkey"], "Org": [".repo-org"]
+    }
+    assert set(_section(settings, "custom_labels")) >= {"API key", "Hotkey"}
+    assert CliArgs.validate_user_args(["--gitea.web_url=https://comment.example"])[0] is False

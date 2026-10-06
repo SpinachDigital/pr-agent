@@ -208,6 +208,9 @@ def test_capability_gate_requires_both_edit_and_remove():
 def test_no_reporter_without_an_editable_comment():
     provider = MagicMock()
     provider.is_supported.return_value = True
+    # MagicMock auto-creates any attribute, so drop the check-run sink explicitly:
+    # this provider has no progress channel at all.
+    del provider.update_check_run_progress
 
     assert ChunkProgressReporter.create(provider, None, "body", total=2, body_builder=str) is None
     assert ChunkProgressReporter.create(provider, object(), "", total=2, body_builder=str) is None
@@ -624,6 +627,7 @@ async def test_describe_progress_comment_reports_a_failed_chunk(published_descri
 @pytest.mark.asyncio
 async def test_describe_progress_is_skipped_when_the_provider_cannot_edit(published_describe):
     provider, edits = _review_progress_editor(is_supported=lambda _capability: False)
+    del provider.update_check_run_progress
     provider.get_filtered_diff_file_names.return_value = []
     tool = _make_describe_tool(provider, [_DESCRIBE_CHUNK, _DESCRIBE_CHUNK])
 
@@ -631,6 +635,87 @@ async def test_describe_progress_is_skipped_when_the_provider_cannot_edit(publis
 
     assert edits == []
     assert tool._chunk_progress is None
+
+
+@pytest.mark.asyncio
+async def test_describe_progress_falls_back_to_the_check_run_sink(published_describe):
+    """Without an editable comment, an in-progress check run serves the progress alone."""
+    provider, edits = _review_progress_editor(is_supported=lambda _capability: False)
+    check_run_lines = []
+    provider.update_check_run_progress.side_effect = (
+        lambda line: check_run_lines.append(line) or True)
+    provider.get_filtered_diff_file_names.return_value = []
+    tool = _make_describe_tool(provider, [_DESCRIBE_CHUNK, _DESCRIBE_CHUNK])
+
+    await _run_chunked_describe(tool)
+
+    assert edits == []
+    assert tool._chunk_progress is not None
+    assert check_run_lines == ["analyzed 1 of 2 chunks", "analyzed 2 of 2 chunks"]
+
+
+@pytest.mark.asyncio
+async def test_review_progress_without_a_comment_serves_the_check_run(published_review):
+    """Automatic commands publish no comment; their check run is the only progress channel."""
+    provider, edits = _review_progress_editor()
+    provider.publish_comment.return_value = None  # no progress comment object exists
+    check_run_lines = []
+    provider.update_check_run_progress.side_effect = (
+        lambda line: check_run_lines.append(line) or True)
+    reviewer = _make_reviewer(provider, [CHUNK_A, CHUNK_B])
+
+    await _run_chunked_review(reviewer)
+
+    assert edits == []
+    assert check_run_lines == ["analyzed 1 of 2 chunks", "analyzed 2 of 2 chunks"]
+
+
+@pytest.mark.asyncio
+async def test_review_progress_writes_the_comment_and_the_check_run_together(published_review):
+    """With both channels available, each settled chunk updates both sinks."""
+    provider, edits = _review_progress_editor()
+    check_run_lines = []
+    provider.update_check_run_progress.side_effect = (
+        lambda line: check_run_lines.append(line) or True)
+    reviewer = _make_reviewer(provider, [CHUNK_A, CHUNK_B])
+
+    await _run_chunked_review(reviewer)
+
+    assert edits == [
+        "Preparing review... analyzed 1 of 2 chunks",
+        "Preparing review... analyzed 2 of 2 chunks",
+    ]
+    assert check_run_lines == ["analyzed 1 of 2 chunks", "analyzed 2 of 2 chunks"]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_check_run_update_never_breaks_the_run(published_review):
+    provider, _edits = _review_progress_editor()
+    provider.update_check_run_progress.side_effect = RuntimeError("api down")
+    reviewer = _make_reviewer(provider, [CHUNK_A, CHUNK_B])
+
+    await _run_chunked_review(reviewer)
+
+    assert reviewer.prediction_data["review"]["score"] == 40
+
+
+@pytest.mark.asyncio
+async def test_auto_suggestions_anchor_the_check_run_reporter(published_suggestions):
+    settings = get_settings()
+    settings.set("config.publish_output", True)
+    settings.set("config.publish_output_progress", True)
+    settings.set("config.is_auto_command", True)
+    tool = _make_suggestion_tool(MagicMock(), [])
+    seen = []
+
+    async def capture(*_args, **_kwargs):
+        seen.append(tool._progress_base_body)
+        return {"code_suggestions": []}
+
+    with patch("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models", side_effect=capture):
+        await tool.run()
+
+    assert seen == ["Preparing suggestions..."]
 
 
 @pytest.mark.asyncio
