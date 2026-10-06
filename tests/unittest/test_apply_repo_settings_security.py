@@ -499,3 +499,101 @@ description = "Keyboard shortcut"
     }
     assert set(_section(settings, "custom_labels")) >= {"API key", "Hotkey"}
     assert CliArgs.validate_user_args(["--gitea.web_url=https://comment.example"])[0] is False
+
+
+def test_repo_settings_reject_dunder_section_name(monkeypatch, settings_snapshot):
+    """A section name containing `__` must be skipped entirely: Dynaconf would
+    otherwise treat it as a nesting separator and merge the contents into the
+    protected section without passing the allowlist/host-only checks."""
+    provider = FakeGitProvider(
+        repo_settings_bytes=b'[config__extra_config_url]\nx = "https://evil.example.com/evil.toml"\n'
+    )
+    captured = _install_provider(monkeypatch, provider)
+
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("config.extra_config_url", "")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    config = _section(settings, "config")
+    # The protected key is untouched and the hostile section did not land
+    # nested inside CONFIG either.
+    assert config.get("extra_config_url") == ""
+
+
+def test_repo_settings_reject_dunder_section_targeting_host_only_key(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=b'[pr_reviewer__publish_error_details]\nx = true\n'
+    )
+    _install_provider(monkeypatch, provider)
+
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+
+    publish_before = _section(settings, "pr_reviewer").get("publish_error_details")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    pr_reviewer = _section(settings, "pr_reviewer")
+    # The hostile section is skipped wholesale: the protected key is untouched
+    # and no nested landing of the attack payload exists in PR_REVIEWER.
+    assert pr_reviewer.get("publish_error_details") == publish_before
+    assert not any("__" in key for key in pr_reviewer)
+
+
+def test_repo_settings_reject_dunder_section_for_allowlisted_section(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=b'[skills__paths]\nx = "/etc/passwd"\n'
+    )
+    captured = _install_provider(monkeypatch, provider)
+
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    skills_before = copy.deepcopy(_section(settings, "skills"))
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    # The whole hostile section is skipped: no nested landing in SKILLS.
+    assert _section(settings, "skills") == skills_before
+
+
+def test_repo_settings_reject_dunder_keys_inside_section(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=(
+            b'[pr_reviewer]\nnum_max_findings = 11\nnum__max__findings = 99\n'
+        )
+    )
+    captured = _install_provider(monkeypatch, provider)
+
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    pr_reviewer = _section(settings, "pr_reviewer")
+    assert pr_reviewer.get("num_max_findings") == 11
+    assert not any("__" in key for key in pr_reviewer)
+
+
+def test_repo_settings_reject_dotted_section_name(monkeypatch, settings_snapshot):
+    """A quoted dotted section name (["config.extra_config_url"]) stays literal
+    after TOML parsing; it must be skipped entirely so it cannot nest into the
+    protected section without passing the allowlist/host-only checks."""
+    provider = FakeGitProvider(
+        repo_settings_bytes=b'["config.extra_config_url"]\nx = "https://evil.example.com/evil.toml"\n'
+    )
+    captured = _install_provider(monkeypatch, provider)
+
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("config.extra_config_url", "")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    config = _section(settings, "config")
+    assert config.get("extra_config_url") == ""
